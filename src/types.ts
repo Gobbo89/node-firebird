@@ -6,6 +6,7 @@
 // published declaration files.
 
 import type { Readable, Writable } from 'stream';
+import type { EventEmitter } from 'events';
 import type { SqlTag } from './sql-template';
 
 export type { SqlTag, SqlQuery, SqlIdentifier, CompiledQuery } from './sql-template';
@@ -15,6 +16,32 @@ export type TransactionCallback = (err: any, transaction: Transaction) => void;
 export type QueryCallback = (err: any, result: any[]) => void;
 export type SimpleCallback = (err: any) => void;
 export type SequentialCallback = (row: any, index: number, next?: (err?: any) => void) => void | Promise<void>;
+
+export interface FbEventState {
+    state: 'IDLE' | 'SUBSCRIBED' | 'CLOSED';
+    hasActiveSubscription: boolean;
+    registeredEvents: Record<string, number>;
+    eventId: number;
+    isEventConnectionOpen: boolean;
+    isDatabaseConnectionClosed: boolean;
+}
+
+export interface FbEventManager extends EventEmitter {
+    readonly eventid: number;
+    readonly events: Record<string, number>;
+    registerEvent(events: string[], callback?: SimpleCallback): this;
+    unregisterEvent(events: string[], callback?: SimpleCallback): this;
+    close(callback?: SimpleCallback): this;
+    getState(): FbEventState;
+    on(event: 'baseline', listener: (counts: Readonly<Record<string, number>>) => void): this;
+    on(event: 'post_event', listener: (name: string, count: number) => void): this;
+    on(event: 'error', listener: (error: Error) => void): this;
+    once(event: 'baseline', listener: (counts: Readonly<Record<string, number>>) => void): this;
+    once(event: 'post_event', listener: (name: string, count: number) => void): this;
+    once(event: 'error', listener: (error: Error) => void): this;
+}
+
+export type FbEventManagerCallback = (err: any, manager?: FbEventManager) => void;
 
 /**
  * Describes a single column in a prepared statement's result set or
@@ -269,7 +296,7 @@ export interface Database {
     batchStream(query: string, options?: BatchStreamOptions): BatchStream;
     drop(callback: SimpleCallback): void;
     escape(value: any): string;
-    attachEvent(callback: any): this;
+    attachEvent(callback: FbEventManagerCallback): this;
     createTablespace(name: string, filePath: string, callback?: QueryCallback): Database;
     alterTablespace(name: string, filePath: string, callback?: QueryCallback): Database;
     dropTablespace(name: string, callback?: QueryCallback): Database;
@@ -290,7 +317,7 @@ export interface Database {
     newStatementAsync(query: string): Promise<Statement>;
     detachAsync(force?: boolean): Promise<void>;
     dropAsync(): Promise<void>;
-    attachEventAsync(): Promise<any>;
+    attachEventAsync(): Promise<FbEventManager>;
     /** Starts a transaction, commits when `work` resolves, rolls back when it rejects. */
     withTransaction<T>(work: (transaction: Transaction) => Promise<T> | T, options?: TransactionOptions | Isolation): Promise<T>;
     /**
@@ -410,6 +437,8 @@ export type SupportedCharacterSet = |
 
 export interface Options {
     host?: string;
+    /** Override the server-advertised auxiliary event host (for NAT, tunnels and load balancers). */
+    eventHost?: string;
     port?: number;
     database?: string;
     user?: string;

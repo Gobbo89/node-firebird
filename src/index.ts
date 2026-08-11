@@ -1,6 +1,7 @@
 import Const from './wire/const';
 import { doError, doCallback, fromCallback, type Callback } from './callback';
 import Connection from './wire/connection';
+import FbEventManager from './wire/fbEventManager';
 import Pool from './pool';
 import PoolCluster from './pool-cluster';
 import type { PoolClusterOptions } from './pool-cluster';
@@ -19,6 +20,7 @@ import type {
 
 export * from './types';
 export { GDSCode } from './gdscodes';
+export { FbEventManager };
 
 if (typeof(setImmediate) === 'undefined') {
     (global as any).setImmediate = function(cb: () => void) {

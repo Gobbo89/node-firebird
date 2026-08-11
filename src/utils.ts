@@ -4,6 +4,13 @@ import type { FbStatusItem } from './callback';
 
 const MessagesError = messagesJson as Record<string, string>;
 
+/** Resolve the address used for Firebird's auxiliary event connection. */
+export function resolveEventHost(options: { host?: string; eventHost?: string }, advertisedHost: string): string | undefined {
+    if (options.eventHost) return options.eventHost;
+    if (advertisedHost === '0.0.0.0' || advertisedHost === '::') return options.host;
+    return advertisedHost;
+}
+
 /**
  * Parse date from string
  */

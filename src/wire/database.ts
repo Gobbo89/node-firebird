@@ -1,6 +1,6 @@
 import Events from 'events';
 import { doError, fromCallback, type Callback, type SimpleCallback } from '../callback';
-import { batchResultToError, escape } from '../utils';
+import { batchResultToError, escape, resolveEventHost } from '../utils';
 import Const from './const';
 import { makeSqlTag, type SqlTag } from '../sql-template';
 import { computeColumnKeys, nestCell, resolveKeyTransform, resolveNestTables } from './xsqlvar';
@@ -464,6 +464,12 @@ class Database extends Events.EventEmitter {
     attachEvent(callback: Callback<FbEventManager>): this {
         var self = this;
         const eventid = self.eventid++;
+        let completed = false;
+        const complete: Callback<FbEventManager> = function(err?: any, manager?: FbEventManager) {
+            if (completed) return;
+            completed = true;
+            callback(err, manager);
+        };
         if (process.env.FIREBIRD_DEBUG) {
             console.log('[fb-debug] Database.attachEvent: calling auxConnection, eventid=%d queue=%d', eventid, self.connection._queue.length);
         }
@@ -473,7 +479,7 @@ class Database extends Events.EventEmitter {
                 if (process.env.FIREBIRD_DEBUG) {
                     console.log('[fb-debug] Database.attachEvent: auxConnection error:', err.message);
                 }
-                doError(err, callback);
+                doError(err, complete);
                 return;
             }
 
@@ -481,9 +487,7 @@ class Database extends Events.EventEmitter {
                 console.log('[fb-debug] Database.attachEvent: auxConnection ok, connecting to aux port %s:%d', socket_info.host, socket_info.port);
             }
 
-            const host = (socket_info.host === '0.0.0.0' || socket_info.host === '::')
-                ? self.connection.options.host
-                : socket_info.host;
+            const host = resolveEventHost(self.connection.options, socket_info.host)!;
 
             const eventConnection = new EventConnection(
                 host, socket_info.port, function(err?: any) {
@@ -491,7 +495,7 @@ class Database extends Events.EventEmitter {
                     if (process.env.FIREBIRD_DEBUG) {
                         console.log('[fb-debug] Database.attachEvent: EventConnection error:', err.message);
                     }
-                    doError(err, callback);
+                    doError(err, complete);
                     return;
                 }
 
@@ -499,17 +503,11 @@ class Database extends Events.EventEmitter {
                     console.log('[fb-debug] Database.attachEvent: EventConnection connected, creating FbEventManager eventid=%d', eventid);
                 }
 
-                const evt = new FbEventManager(self, eventConnection, eventid, function (err: any) {
-                    if (err) {
-                        doError(err, callback);
-                        return;
-                    }
-
-                    if (process.env.FIREBIRD_DEBUG) {
-                        console.log('[fb-debug] Database.attachEvent: FbEventManager ready, eventid=%d', evt.eventid);
-                    }
-                callback(err, evt);
-                });
+                const evt = new FbEventManager(self, eventConnection, eventid);
+                if (process.env.FIREBIRD_DEBUG) {
+                    console.log('[fb-debug] Database.attachEvent: FbEventManager ready, eventid=%d', evt.eventid);
+                }
+                complete(undefined, evt);
             }, self);
         });
 

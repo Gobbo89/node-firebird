@@ -1319,6 +1319,13 @@ Firebird database events are **asynchronous** notifications triggered by `POST_E
 triggers or stored procedures. They travel over a separate "aux" connection (opened via
 `db.attachEvent()`) and are managed through a `FbEventManager` instance.
 
+Install `baseline`, `post_event`, and `error` listeners before calling
+`registerEvent()`. The first auxiliary packet for every non-empty subscription
+generation is emitted as `baseline` with a snapshot of the current counters; it
+is not a `post_event`. The baseline can arrive before the registration callback
+because the auxiliary socket and the main-connection acknowledgement are
+independent.
+
 ```js
 Firebird.attach(options, function (err, db) {
   if (err) throw err;
@@ -1327,16 +1334,20 @@ Firebird.attach(options, function (err, db) {
   db.attachEvent(function (err, evtmgr) {
     if (err) throw err;
 
-    // 2. Subscribe to one or more named events (names must match POST_EVENT('name') in your
-    //    PSQL triggers/procedures). Resolves once op_que_events is acknowledged by the server.
+    evtmgr.on('baseline', function (counts) {
+      // Defensive snapshot of the counters that prime this subscription.
+    });
+    evtmgr.on('post_event', function (name, count) {
+      // A real counter change after the baseline.
+    });
+    evtmgr.on('error', function (error) {
+      // Asynchronous auxiliary-socket/protocol failure; no automatic reconnect.
+    });
+
+    // 2. Subscribe to one or more named events (1..127 UTF-8 bytes and matching
+    //    POST_EVENT('name') in PSQL). Resolves once op_que_events is acknowledged.
     evtmgr.registerEvent(['MY_EVENT'], function (err) {
       if (err) throw err;
-
-      // 3. Listen for POST_EVENT notifications
-      evtmgr.on('post_event', function (name, count) {
-        // name  === event name string (e.g. 'MY_EVENT')
-        // count === cumulative trigger count since last notification
-      });
     });
 
     // 4. Unsubscribe from one or more events. Passing all currently registered names cancels
@@ -1357,6 +1368,12 @@ Firebird.attach(options, function (err, db) {
   });
 });
 ```
+
+By default the driver connects to the auxiliary host advertised by Firebird,
+falling back to the main database host when Firebird advertises `0.0.0.0` or
+`::`. Behind NAT, a tunnel, container networking, or a load balancer, set
+`options.eventHost` to the client-reachable auxiliary host. This affects only
+database-event connections.
 
 ### Escaping Query values
 

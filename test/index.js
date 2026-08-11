@@ -220,6 +220,16 @@ describe('Firebird Database Events (POST_EVENT)', function () {
     let db;
     let nextTestEventId = 1;
 
+    function onceEvent(emitter, name, label = name) {
+        return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error(`Timed out waiting for ${label}`)), 5000);
+            emitter.once(name, value => {
+                clearTimeout(timer);
+                resolve(value);
+            });
+        });
+    }
+
     beforeAll(async function () {
         db = await fromCallback(cb => Firebird.attachOrCreate(config, cb));
         await fromCallback(cb => db.query(table_sql, [], cb));
@@ -259,12 +269,15 @@ describe('Firebird Database Events (POST_EVENT)', function () {
     it('should register a named event subscription', async function () {
         const evtmgr = await fromCallback(cb => db.attachEvent(cb));
         try {
+            const baselinePromise = onceEvent(evtmgr, 'baseline');
             await fromCallback(cb => evtmgr.registerEvent(['TRG_TEST_EVENTS'], cb));
+            const baseline = await baselinePromise;
             const subscribedState = evtmgr.getState();
             assert.equal(subscribedState.state, 'SUBSCRIBED');
             assert.equal(subscribedState.hasActiveSubscription, true);
             assert.deepStrictEqual(Object.keys(subscribedState.registeredEvents), ['TRG_TEST_EVENTS']);
             assert.ok(subscribedState.registeredEvents.TRG_TEST_EVENTS >= 0);
+            assert.deepStrictEqual(baseline, subscribedState.registeredEvents);
         } finally {
             await fromCallback(cb => evtmgr.close(cb));
         }
@@ -273,7 +286,9 @@ describe('Firebird Database Events (POST_EVENT)', function () {
     it('should unregister a named event subscription', async function () {
         const evtmgr = await fromCallback(cb => db.attachEvent(cb));
         try {
+            const baselinePromise = onceEvent(evtmgr, 'baseline');
             await fromCallback(cb => evtmgr.registerEvent(['TRG_TEST_EVENTS'], cb));
+            await baselinePromise;
             await fromCallback(cb => evtmgr.unregisterEvent(['TRG_TEST_EVENTS'], cb));
             const idleState = evtmgr.getState();
             assert.equal(idleState.state, 'IDLE');
@@ -288,10 +303,15 @@ describe('Firebird Database Events (POST_EVENT)', function () {
         const evtmgr = await fromCallback(cb => db.attachEvent(cb));
         const fireDb = await fromCallback(cb => Firebird.attach(config, cb));
         try {
+            const posts = [];
+            const baselinePromise = onceEvent(evtmgr, 'baseline');
+            evtmgr.on('post_event', (name, count) => posts.push([name, count]));
             await fromCallback(cb => evtmgr.registerEvent(['TRG_TEST_EVENTS'], cb));
+            await baselinePromise;
+            assert.deepStrictEqual(posts, [], 'the initial counter packet must not become a post_event');
 
             const eventPromise = new Promise((resolve, reject) => {
-                evtmgr.on('post_event', (name, count) => {
+                evtmgr.once('post_event', (name, count) => {
                     try {
                         assert.equal(name, 'TRG_TEST_EVENTS');
                         assert.ok(count > 0);
@@ -320,6 +340,36 @@ describe('Firebird Database Events (POST_EVENT)', function () {
             if (cleanupError) {
                 throw cleanupError;
             }
+        }
+    });
+
+    it('should emit a fresh baseline after changing the registered event set', async function () {
+        const evtmgr = await fromCallback(cb => db.attachEvent(cb));
+        try {
+            const first = onceEvent(evtmgr, 'baseline', 'initial baseline');
+            await fromCallback(cb => evtmgr.registerEvent(['TRG_TEST_EVENTS'], cb));
+            assert.ok(Object.hasOwn(await first, 'TRG_TEST_EVENTS'));
+
+            const second = onceEvent(evtmgr, 'baseline', 'add-event baseline');
+            await fromCallback(cb => evtmgr.registerEvent(['UNFIRED_EVENT'], cb));
+            assert.deepStrictEqual(Object.keys(await second).sort(), ['TRG_TEST_EVENTS', 'UNFIRED_EVENT']);
+
+            const third = onceEvent(evtmgr, 'baseline', 'remove-event baseline');
+            await fromCallback(cb => evtmgr.unregisterEvent(['UNFIRED_EVENT'], cb));
+            assert.deepStrictEqual(Object.keys(await third), ['TRG_TEST_EVENTS']);
+        } finally {
+            await fromCallback(cb => evtmgr.close(cb));
+        }
+    });
+
+    it('should survive repeated attach, baseline and close cycles', async function () {
+        for (let i = 0; i < 3; i++) {
+            const evtmgr = await fromCallback(cb => db.attachEvent(cb));
+            const baseline = onceEvent(evtmgr, 'baseline');
+            await fromCallback(cb => evtmgr.registerEvent(['TRG_TEST_EVENTS'], cb));
+            await baseline;
+            await fromCallback(cb => evtmgr.close(cb));
+            await fromCallback(cb => evtmgr.close(cb));
         }
     });
 });

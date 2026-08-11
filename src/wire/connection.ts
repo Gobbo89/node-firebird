@@ -1844,6 +1844,9 @@ class Connection {
                         case Const.SQL_BOOLEAN:
                             ret[i] = new Xsql.SQLParamInt(null);
                             break;
+                        case Const.SQL_INT128:
+                            ret[i] = new Xsql.SQLParamInt128(null);
+                            break;
                         default:
                             ret[i] = null;
                     }
@@ -1880,7 +1883,10 @@ class Connection {
                                         ret[i] = new Xsql.SQLParamInt128(value);
                                         break;
                                     case 'number':
-                                        if (value % 1 === 0) {
+                                        const scaledNumeric = Xsql.createScaledNumericParam(meta, value);
+                                        if (scaledNumeric) {
+                                            ret[i] = scaledNumeric;
+                                        } else if (value % 1 === 0) {
                                             if (value >= Const.MIN_INT && value <= Const.MAX_INT)
                                                 ret[i] = new Xsql.SQLParamInt(value);
                                             else

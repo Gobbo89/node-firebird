@@ -286,12 +286,12 @@ export class XdrWriter {
         this.pos += 4;
     }
 
-    addInt64(value: number | bigint): void {
+    addInt64(value: number | bigint | string): void {
         this.ensure(8);
-        // Note: for numbers, precision is limited to Number.MAX_SAFE_INTEGER
-        // (±2^53-1); values outside this range lose precision, which matches
-        // the previous Long.fromNumber() behaviour. BigInts keep full precision.
-        this.buffer.writeBigInt64BE(typeof value === 'bigint' ? value : BigInt(Math.trunc(value)), this.pos);
+        // A number may already have lost precision before it reaches us;
+        // bigint and decimal integer strings retain the exact coefficient.
+        const exact = typeof value === 'number' ? BigInt(Math.trunc(value)) : BigInt(value);
+        this.buffer.writeBigInt64BE(exact, this.pos);
         this.pos += 8;
     }
 
@@ -303,7 +303,7 @@ export class XdrWriter {
         const high = bigValue >> BigInt(64);
         const low = bigValue & BigInt("0xFFFFFFFFFFFFFFFF");
 
-        this.buffer.writeBigUInt64BE(high, this.pos);
+        this.buffer.writeBigInt64BE(high, this.pos);
         this.pos += 8;
         this.buffer.writeBigUInt64BE(low, this.pos);
         this.pos += 8;
@@ -479,15 +479,18 @@ export class XdrReader {
 
     readInt64() {
         // Note: precision is limited to Number.MAX_SAFE_INTEGER (±2^53-1).
-        // Values outside this range lose precision, which matches the previous
-        // Long(low, high).toNumber() behaviour.
-        const result = Number(this.buffer.readBigInt64BE(this.pos));
+        // Callers that represent SQL numerics use readInt64BigInt instead.
+        return Number(this.readInt64BigInt());
+    }
+
+    readInt64BigInt(): bigint {
+        const result = this.buffer.readBigInt64BE(this.pos);
         this.pos += 8;
         return result;
     }
 
-    readInt128() {
-        var high = this.buffer.readBigUInt64BE(this.pos)
+    readInt128(): bigint {
+        var high = this.buffer.readBigInt64BE(this.pos)
         this.pos += 8
 
         var low = this.buffer.readBigUInt64BE(this.pos)

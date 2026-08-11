@@ -758,14 +758,23 @@ Firebird.attach({
             const v = next();
             return v === null ? null : v.toISOString().slice(0, 10);
         }
-        // BIGINT columns as strings
-        if (column.type === Firebird.SQL_TYPES.SQL_INT64 && !column.scale) {
-            return String(next());
-        }
         return next(); // everything else: default decoding
     },
 }, (err, db) => { /* ... */ });
 ```
+
+INT64- and INT128-backed values are decoded from their exact signed integer
+coefficient. When that coefficient is within JavaScript's inclusive safe
+integer range, the default result is a `number`; otherwise it is an exact
+scaled decimal `string` (including trailing zeroes implied by the declared
+scale). A `typeCast` hook runs after this decision: calling `String(next())`
+cannot recover precision that was already lost in a JavaScript number.
+
+For exact unsafe input parameters, pass a decimal string (or a supported
+integer `bigint`) rather than an already-rounded unsafe JavaScript number.
+Finite `number` parameters targeting fixed-point columns are encoded with the
+prepared column's integer type and scale instead of being routed through a
+binary double.
 
 `column` describes the result column:
 

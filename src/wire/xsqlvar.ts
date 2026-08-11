@@ -19,6 +19,29 @@ const
     MsPerMinute = 60000;
 
 const EMPTY_BUFFER = Buffer.alloc(0);
+const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
+const MIN_SAFE_BIGINT = BigInt(Number.MIN_SAFE_INTEGER);
+
+/** Format a signed Firebird integer coefficient without passing through Number. */
+export function formatScaledBigInt(value: bigint, scale: number): string {
+    const negative = value < 0n;
+    let digits = (negative ? -value : value).toString();
+    const sign = negative ? '-' : '';
+
+    if (scale === 0) return sign + digits;
+    if (scale > 0) return sign + digits + '0'.repeat(scale);
+
+    const places = -scale;
+    if (digits.length <= places) digits = digits.padStart(places + 1, '0');
+    return sign + digits.slice(0, -places) + '.' + digits.slice(-places);
+}
+
+function decodeScaledBigInt(value: bigint, scale: number): number | string {
+    if (value > MAX_SAFE_BIGINT || value < MIN_SAFE_BIGINT) return formatScaledBigInt(value, scale);
+    return scale < 0
+        ? Number(value) / Math.pow(10, -scale)
+        : Number(value) * Math.pow(10, scale);
+}
 
 /**
  * Maps Firebird character-set names (upper-case) to the Node.js Buffer
@@ -556,11 +579,7 @@ export class SQLVarShort extends SQLVarInt {
 
 export class SQLVarInt64 extends SQLVarBase {
     decode(data: XdrReader, lowerV13: boolean) {
-        var ret = data.readInt64();
-
-        if (this.scale) {
-            ret = ret / ScaleDivisor[Math.abs(this.scale)];
-        }
+        const ret = decodeScaledBigInt(data.readInt64BigInt(), this.scale);
 
         if (!lowerV13 || !data.readInt()) {
             return ret;
@@ -578,22 +597,7 @@ export class SQLVarInt64 extends SQLVarBase {
 
 export class SQLVarInt128 extends SQLVarBase {
     decode(data: XdrReader, lowerV13: boolean) {
-        var retBigInt = BigInt(data.readInt128())
-        let ret: string | number;
-
-        if (retBigInt > BigInt(Number.MAX_SAFE_INTEGER)) {
-            ret = retBigInt.toString();
-
-            var integerPart = ret.slice(0, Math.abs(this.scale) * -1)
-            var decimalPart = ret.slice(Math.abs(this.scale) * -1)
-
-            if (integerPart === '') integerPart = '0'
-
-            ret = `${integerPart}.${decimalPart}`
-        } else {
-            ret = Number(retBigInt);
-            ret = ret / ScaleDivisor[Math.abs(this.scale)];
-        }
+        const ret = decodeScaledBigInt(data.readInt128(), this.scale);
 
         if (!lowerV13 || !data.readInt()) {
             return ret;
@@ -922,6 +926,80 @@ export class SQLParamInt128 {
             data.addInt128(0);
             data.addInt(1);
         }
+    }
+}
+
+export class SQLParamScaledInt extends SQLParamInt {
+    scale: number;
+    blrType: number;
+
+    constructor(value: number, scale: number, blrType: number) {
+        super(value);
+        this.scale = scale;
+        this.blrType = blrType;
+    }
+
+    calcBlr(blr: BlrWriter): void {
+        blr.addByte(this.blrType);
+        blr.addShort(this.scale);
+    }
+}
+
+export class SQLParamScaledInt64 extends SQLParamInt64 {
+    scale: number;
+
+    constructor(value: string, scale: number) {
+        super(value);
+        this.scale = scale;
+    }
+
+    calcBlr(blr: BlrWriter): void {
+        blr.addByte(Const.blr_int64);
+        blr.addShort(this.scale);
+    }
+}
+
+export class SQLParamScaledInt128 extends SQLParamInt128 {
+    scale: number;
+
+    constructor(value: string, scale: number) {
+        super(value);
+        this.scale = scale;
+    }
+
+    calcBlr(blr: BlrWriter): void {
+        blr.addByte(Const.blr_int128);
+        blr.addShort(this.scale);
+    }
+}
+
+/** Build an exact fixed-point parameter using the prepared target metadata. */
+export function createScaledNumericParam(meta: SQLVarBase, value: number): SQLParamInt | SQLParamInt64 | SQLParamInt128 | SQLParamDouble | null {
+    if (!meta || meta.scale === 0 || !(
+        meta.type === Const.SQL_SHORT || meta.type === Const.SQL_LONG ||
+        meta.type === Const.SQL_INT64 || meta.type === Const.SQL_INT128
+    )) return null;
+    if (!Number.isFinite(value)) return new SQLParamDouble(value);
+
+    let coefficient: string;
+    if (meta.scale < 0) coefficient = value.toFixed(-meta.scale).replace('.', '');
+    else coefficient = Math.round(value / Math.pow(10, meta.scale)).toString();
+    // Number#toFixed switches to exponent notation for magnitudes >= 1e21;
+    // those values are already unsafe as JS numbers, so retain the legacy
+    // server-side conversion path instead of feeding "1e+..." to BigInt.
+    if (!/^-?\d+$/.test(coefficient)) return new SQLParamDouble(value);
+
+    switch (meta.type) {
+        case Const.SQL_SHORT:
+            return new SQLParamScaledInt(Number(coefficient), meta.scale, Const.blr_short);
+        case Const.SQL_LONG:
+            return new SQLParamScaledInt(Number(coefficient), meta.scale, Const.blr_long);
+        case Const.SQL_INT64:
+            return new SQLParamScaledInt64(coefficient, meta.scale);
+        case Const.SQL_INT128:
+            return new SQLParamScaledInt128(coefficient, meta.scale);
+        default:
+            return null;
     }
 }
 

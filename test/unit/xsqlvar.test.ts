@@ -28,6 +28,21 @@ describe('SQLVar decoding (protocol 13+, lowerV13=false)', () => {
         expect(v.decode(reader(w => w.addInt64(1234567)), false)).toBe(1234.567);
     });
 
+    it.each([
+        [-9007199254740992n, 0, '-9007199254740992'],
+        [-9007199254740991n, 0, -9007199254740991],
+        [9007199254740991n, 0, 9007199254740991],
+        [9007199254740992n, 0, '9007199254740992'],
+        [-9223372036854775808n, -4, '-922337203685477.5808'],
+        [9223372036854775807n, -4, '922337203685477.5807'],
+        [9007199254740992n, -2, '90071992547409.92'],
+        [-9007199254741000n, -4, '-900719925474.1000'],
+    ])('SQLVarInt64 preserves coefficient %s at scale %s', (coefficient, scale, expected) => {
+        const v = new Xsql.SQLVarInt64();
+        v.scale = scale;
+        expect(v.decode(reader(w => w.addInt64(coefficient)), false)).toBe(expected);
+    });
+
     it('SQLVarInt128 returns a decimal string for values beyond MAX_SAFE_INTEGER', () => {
         const v = new Xsql.SQLVarInt128();
         v.scale = -2;
@@ -39,6 +54,30 @@ describe('SQLVar decoding (protocol 13+, lowerV13=false)', () => {
         const v = new Xsql.SQLVarInt128();
         v.scale = -2;
         expect(v.decode(reader(w => w.addInt128(12345n)), false)).toBe(123.45);
+    });
+
+    it('SQLVarInt128 formats negative unsafe values and leading fractional zeroes', () => {
+        const unsafe = new Xsql.SQLVarInt128();
+        unsafe.scale = -4;
+        expect(unsafe.decode(reader(w => w.addInt128(-123456789012345678901n)), false))
+            .toBe('-12345678901234567.8901');
+
+        const small = new Xsql.SQLVarInt128();
+        small.scale = -4;
+        expect(small.decode(reader(w => w.addInt128(-42n)), false)).toBe(-0.0042);
+    });
+
+    it('SQLVarInt128 handles signed extrema', () => {
+        const v = new Xsql.SQLVarInt128();
+        v.scale = 0;
+        expect(v.decode(reader(w => w.addInt128(-(1n << 127n))), false)).toBe('-170141183460469231731687303715884105728');
+        expect(v.decode(reader(w => w.addInt128((1n << 127n) - 1n)), false)).toBe('170141183460469231731687303715884105727');
+    });
+
+    it('preserves null indicators after exact INT64 decoding', () => {
+        const v = new Xsql.SQLVarInt64();
+        v.scale = 0;
+        expect(v.decode(reader(w => { w.addInt64('9223372036854775807'); w.addInt(1); }), true)).toBeNull();
     });
 
     it('SQLVarBoolean decodes to true/false', () => {
@@ -104,6 +143,39 @@ describe('SQLParam encoding', () => {
         const big = 170141183460469231731687303715884105n;
         const r2 = reader(w => new Xsql.SQLParamInt128(big).encode(w));
         expect(r2.readInt128()).toBe(big);
+    });
+
+    it('metadata-directed scaled parameters preserve decimal coefficients and BLR scale', () => {
+        const meta64 = new Xsql.SQLVarInt64();
+        meta64.type = Const.SQL_INT64;
+        meta64.scale = -4;
+        const p64 = Xsql.createScaledNumericParam(meta64, 123.4567)!;
+        const r64 = reader(w => p64.encode(w));
+        expect(r64.readInt64BigInt()).toBe(1234567n);
+
+        const blr64 = new BlrWriter();
+        p64.calcBlr(blr64);
+        expect(blr64.buffer[0]).toBe(Const.blr_int64);
+        expect(blr64.buffer.readInt8(1)).toBe(-4);
+
+        const meta128 = new Xsql.SQLVarInt128();
+        meta128.type = Const.SQL_INT128;
+        meta128.scale = -2;
+        const p128 = Xsql.createScaledNumericParam(meta128, -12.34)!;
+        expect(reader(w => p128.encode(w)).readInt128()).toBe(-1234n);
+    });
+
+    it('scaled parameter selection leaves unrelated values alone and preserves non-finite fallback', () => {
+        const unscaled = new Xsql.SQLVarInt64();
+        unscaled.type = Const.SQL_INT64;
+        unscaled.scale = 0;
+        expect(Xsql.createScaledNumericParam(unscaled, 12)).toBeNull();
+
+        const scaled = new Xsql.SQLVarInt64();
+        scaled.type = Const.SQL_INT64;
+        scaled.scale = -2;
+        expect(Xsql.createScaledNumericParam(scaled, Number.POSITIVE_INFINITY)).toBeInstanceOf(Xsql.SQLParamDouble);
+        expect(Xsql.createScaledNumericParam(scaled, 1e21)).toBeInstanceOf(Xsql.SQLParamDouble);
     });
 
     it('SQLParamBool encodes 1/0', () => {

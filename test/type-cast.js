@@ -27,6 +27,17 @@ describe('typeCast hook', function () {
         await db.queryAsync(
             'INSERT INTO cast_test (id, name, big, price, born, note) VALUES (?, ?, ?, ?, ?, ?)',
             [2, 'bob', 42, null, null, null]);
+        await db.queryAsync(
+            'CREATE TABLE exact_numeric (id INT NOT NULL PRIMARY KEY, raw_big BIGINT, ' +
+            'n2 NUMERIC(18,2), n4 NUMERIC(18,4))');
+        await db.queryAsync('INSERT INTO exact_numeric VALUES (?, ?, ?, ?)',
+            [1, '9223372036854775807', '90071992547409.92', '900719925474.0992']);
+        await db.queryAsync('INSERT INTO exact_numeric VALUES (?, ?, ?, ?)',
+            [2, '-9223372036854775808', '-90071992547409.92', '-900719925474.1000']);
+        await db.queryAsync('INSERT INTO exact_numeric VALUES (?, ?, ?, ?)',
+            [3, '9007199254740991', '123.45', '900719925474.0991']);
+        await db.queryAsync('INSERT INTO exact_numeric VALUES (?, ?, ?, ?)',
+            [4, '9007199254740992', '99999999999999.99', '99999999999999.9999']);
     });
 
     afterAll(async function () {
@@ -70,6 +81,34 @@ describe('typeCast hook', function () {
         assert.strictEqual(rows[0].big, '123456789012345');
         assert.strictEqual(typeof rows[1].big, 'string');
         assert.strictEqual(rows[0].name, 'alice'); // untouched
+    });
+
+    it('returns exact strings only when the raw fixed-point coefficient is unsafe', async function () {
+        const rows = await db.queryAsync(
+            'SELECT raw_big, n2, n4 FROM exact_numeric ORDER BY id');
+        assert.strictEqual(rows[0].raw_big, '9223372036854775807');
+        assert.strictEqual(rows[1].raw_big, '-9223372036854775808');
+        assert.strictEqual(rows[2].raw_big, 9007199254740991);
+        assert.strictEqual(rows[3].raw_big, '9007199254740992');
+        assert.strictEqual(rows[0].n2, '90071992547409.92');
+        assert.strictEqual(rows[1].n2, '-90071992547409.92');
+        assert.strictEqual(rows[0].n4, '900719925474.0992');
+        assert.strictEqual(rows[1].n4, '-900719925474.1000');
+        assert.strictEqual(rows[2].n4, 900719925474.0991);
+        assert.strictEqual(rows[3].n4, '99999999999999.9999');
+
+        const text = await db.queryAsync(
+            'SELECT CAST(raw_big AS VARCHAR(30)) raw_text, CAST(n4 AS VARCHAR(30)) n4_text ' +
+            'FROM exact_numeric WHERE id = 1');
+        assert.strictEqual(text[0].raw_text.trim(), rows[0].raw_big);
+        assert.strictEqual(text[0].n4_text.trim(), rows[0].n4);
+    });
+
+    it('encodes finite JS numbers using the target fixed-point scale', async function () {
+        await db.queryAsync('INSERT INTO exact_numeric VALUES (?, ?, ?, ?)',
+            [5, 123, 123.45, 123.4567]);
+        const rows = await db.queryAsync('SELECT raw_big, n2, n4 FROM exact_numeric WHERE id = 5');
+        assert.deepStrictEqual(rows[0], { raw_big: 123, n2: 123.45, n4: 123.4567 });
     });
 
     it('casts DATE columns to strings', async function () {
